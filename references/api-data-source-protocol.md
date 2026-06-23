@@ -318,6 +318,43 @@ def fetch_price(symbol, market):
 
 ---
 
+## 八·补、v2.0 新增字段组：`time_series` 与 `models`
+
+> v2.0 起，`fetch_stock_data.py` 在原九大字段组之外，调用 `scripts/value_models.py` 自动计算并输出两组新字段。原九组契约不变，向后兼容。
+
+### `time_series`（时间序列，index 0 = 最近期）
+
+| 子字段 | 含义 |
+|---|---|
+| `revenue` / `net_income` | 营收 / 归母净利 5-10 年序列 |
+| `gross_margin` / `roe` | 毛利率 / ROE 序列 |
+| `fcf` / `operating_cf` | 自由现金流 / 经营现金流序列 |
+| `shares` | 股本序列（用于股权稀释检查） |
+| `years` | 对应年份标签 |
+
+### `models`（量化模型输出）
+
+| 子字段 | 含义 | applicable 规则 |
+|---|---|---|
+| `dupont` | 杜邦三/五因子分解 | 数据足即可 |
+| `roic` | ROIC vs WACC | 数据足即可 |
+| `piotroski_f` | F-Score（0-9） | 数据足即可 |
+| `beneish_m` | M-Score（盈余操纵） | **金融股 / 数据不足 → applicable=False**；缺失变量用中性值代入并记 `defaults_used`，缺≥5 个 → False |
+| `altman_z` | Z-Score（破产风险） | **金融股 → applicable=False** |
+| `earnings_quality` | 盈余质量（现金含量/应计比） | 数据足即可 |
+| `reverse_dcf` | 反向 DCF 隐含增速 | **缺 market_cap / base_fcf（如 A 股）→ applicable=False** |
+| `growth_consistency` | CAGR + ROE 一致性 | 数据足即可 |
+
+### 引用铁律
+
+1. 报告引用任何量化指标，**必须先检查该模型 `applicable` 字段**；为 `False` 时不得下量化结论，改用定性判断并标注 "NA（数据不足/不适用）"。
+2. **A 股限制**：`stock_financial_abstract` 为摘要级，缺三大报表明细，故 A 股调用时 `enable_forensic=False`、`base_fcf=None`，M-Score/Z-Score/反向 DCF 多为 NA。**禁止用经营现金流冒充 FCF。**
+3. 序列方向统一为"从新到旧"（index 0 最近期），跨模型一致。
+4. 报告附录须附 `models`/`time_series` 原始输出快照，保证可审计、可复现。
+
+---
+
 ## 九、版本记录
 
+- **v2.0（2026-06-22）** — 新增 `time_series` 与 `models` 两大字段组，由 `scripts/value_models.py` 自动计算（杜邦/ROIC/F/M/Z-Score/盈余质量/反向 DCF/CAGR 一致性）；明确 applicable 护栏与 A 股数据限制；保持原九组向后兼容。
 - **v1.6（2026-05-05）** — 初版。建立 yfinance + AkShare 双引擎机制，新增 Tier 0 信源等级，新增 `scripts/fetch_stock_data.py` 一键脚本。
