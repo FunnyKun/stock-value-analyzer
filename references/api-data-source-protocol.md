@@ -342,13 +342,14 @@ def fetch_price(symbol, market):
 | `beneish_m` | M-Score（盈余操纵） | **金融股 / 数据不足 → applicable=False**；缺失变量用中性值代入并记 `defaults_used`，缺≥5 个 → False |
 | `altman_z` | Z-Score（破产风险） | **金融股 → applicable=False** |
 | `earnings_quality` | 盈余质量（现金含量/应计比） | 数据足即可 |
-| `reverse_dcf` | 反向 DCF 隐含增速 | **缺 market_cap / base_fcf（如 A 股）→ applicable=False** |
+| `reverse_dcf` | 反向 DCF 隐含增速 | **缺 market_cap / 正的 base_fcf，或A股金融业 → applicable=False** |
 | `growth_consistency` | CAGR + ROE 一致性 | 数据足即可 |
 
 ### 引用铁律
 
 1. 报告引用任何量化指标，**必须先检查该模型 `applicable` 字段**；为 `False` 时不得下量化结论，改用定性判断并标注 "NA（数据不足/不适用）"。
-2. **A 股限制**：`stock_financial_abstract` 为摘要级，缺三大报表明细，故 A 股调用时 `enable_forensic=False`、`base_fcf=None`，M-Score/Z-Score/反向 DCF 多为 NA。**禁止用经营现金流冒充 FCF。**
+2. **A股三表补充**：使用 `stock_profit_sheet_by_report_em`、`stock_balance_sheet_by_report_em`、`stock_cash_flow_sheet_by_report_em`，参数为 `SH600519` / `SZ000651` 形式。按共同年报日期对齐最多10年，优先采用同日期最新更新记录；三表失败回退摘要，失败原因进入 `financials_detail.errors` 和顶层 `errors`。原始CSV及接口/参数/抓取时间/实际期间保存在当前工作目录的 `数据/AKShare/`，输出 `financials_detail.files` 记录路径；缺失字段保留 `None`。
+   模型财务输入采用合并净利润与合并权益；ROE是期末权益口径，股本金额仅作趋势代理。`FCF=CFO−CONSTRUCT_LONG_ASSET`，金融业M/Z及标准反向DCF仍不适用；其他公司按输入及模型状态决定。检查 `missing_fields` / `defaults_used`，核资金受限、融资及每股归属；该FCF是简化代理，不自动等于FCFF/FCFE。
 3. 序列方向统一为"从新到旧"（index 0 最近期），跨模型一致。
 4. 报告附录须附 `models`/`time_series` 原始输出快照，保证可审计、可复现。
 
