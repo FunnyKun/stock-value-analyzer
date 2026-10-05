@@ -4,7 +4,7 @@
 value_models.py — 股票价值分析器 v2.0 可复现量化模型库
 
 被 fetch_stock_data.py 调用，提供：
-  1) 多年三大报表序列提取（yfinance / A股摘要）
+  1) 多年三大报表序列提取（yfinance / A股三表及摘要）
   2) 八大量化模型：杜邦分解、ROIC、Piotroski F-Score、Beneish M-Score、
      Altman Z-Score、盈余质量、反向 DCF 隐含增速、历史 CAGR 与 ROE 一致性
 
@@ -172,6 +172,68 @@ def extract_time_series_akshare_a(df_fin) -> Dict[str, Any]:
             ts[stmt][key] = [_num(chosen.get(c)) for c in year_cols] if chosen is not None else []
     except Exception as e:
         ts["_error"] = f"extract_time_series_akshare_a 失败: {e}"
+    return ts
+
+
+def extract_time_series_akshare_a_reports(income_df, balance_df, cashflow_df) -> Dict[str, Any]:
+    """东方财富A股三表：按共同年报期对齐，仅映射现有模型的输入（金额为元）。"""
+    frames = []
+    for df in (income_df, balance_df, cashflow_df):
+        if df is None or df.empty or "REPORT_DATE" not in df:
+            raise ValueError("三表为空或缺 REPORT_DATE，保留摘要结果")
+        df = df.copy()
+        df["REPORT_DATE"] = df["REPORT_DATE"].astype(str).str[:10]
+        df = df[df["REPORT_DATE"].str.endswith("-12-31")]
+        order = [c for c in ("REPORT_DATE", "UPDATE_DATE", "NOTICE_DATE") if c in df]
+        df = df.sort_values(order).drop_duplicates("REPORT_DATE", keep="last")
+        frames.append(df.set_index("REPORT_DATE"))
+    dates = sorted(set.intersection(*(set(df.index) for df in frames)), reverse=True)[:10]
+    if not dates:
+        raise ValueError("三表没有共同年报期，保留摘要结果")
+    income, balance, cashflow = frames
+    ts: Dict[str, Any] = {"fiscal_periods": dates, "income_statement": {},
+                          "balance_sheet": {}, "cashflow": {}, "source": "akshare_a_report_em",
+                          "currency": "CNY", "unit": "元",
+                          "org_type": str(balance.loc[dates[0]].get("ORG_TYPE", ""))}
+
+    def series(df, column):
+        return [_num(df.loc[d].get(column)) for d in dates]
+
+    for statement, df, columns in (
+        ("income_statement", income, {
+            "total_revenue": "OPERATE_INCOME", "operating_income": "OPERATE_PROFIT",
+            "pretax_income": "TOTAL_PROFIT", "tax_provision": "INCOME_TAX",
+            "net_income": "NETPROFIT", "interest_expense": "FE_INTEREST_EXPENSE"}),
+        ("balance_sheet", balance, {
+            "total_assets": "TOTAL_ASSETS", "total_liabilities": "TOTAL_LIABILITIES",
+            "total_equity": "TOTAL_EQUITY", "current_assets": "TOTAL_CURRENT_ASSETS",
+            "current_liabilities": "TOTAL_CURRENT_LIAB", "cash": "MONETARYFUNDS",
+            "receivables": "ACCOUNTS_RECE", "ppe_net": "FIXED_ASSET",
+            "long_term_debt": "LONG_LOAN", "current_debt": "SHORT_LOAN",
+            "shares": "SHARE_CAPITAL"}),
+        ("cashflow", cashflow, {"operating_cashflow": "NETCASH_OPERATE",
+                               "depreciation": "FA_IR_DEPR"}),
+    ):
+        ts[statement] = {key: series(df, column) for key, column in columns.items()}
+
+    def combine(*arrays, subtract=False):
+        return [None if any(v is None for v in values) else
+                (values[0] - values[1] if subtract else sum(values)) for values in zip(*arrays)]
+
+    inc, bs, cf = ts["income_statement"], ts["balance_sheet"], ts["cashflow"]
+    inc["gross_profit"] = combine(inc["total_revenue"], series(income, "OPERATE_COST"), subtract=True)
+    inc["ebit"] = combine(inc["pretax_income"], inc["interest_expense"])
+    inc["sga"] = combine(series(income, "SALE_EXPENSE"), series(income, "MANAGE_EXPENSE"))
+    bs["working_capital"] = combine(bs["current_assets"], bs["current_liabilities"], subtract=True)
+    bs["retained_earnings"] = combine(series(balance, "SURPLUS_RESERVE"), series(balance, "UNASSIGN_RPOFIT"))
+    capex = series(cashflow, "CONSTRUCT_LONG_ASSET")
+    cf["capex"] = [-v if v is not None and v >= 0 else None for v in capex]
+    cf["free_cashflow"] = combine(cf["operating_cashflow"], cf["capex"])
+    ts["missing_fields"] = [f"{stmt}.{key}" for stmt in ("income_statement", "balance_sheet", "cashflow")
+                            for key, values in ts[stmt].items() if any(v is None for v in values[:2])]
+    ts["note"] = ("使用合并净利润/合并权益，ROE为期末权益口径；SHARE_CAPITAL仅作股本金额趋势代理。"
+                  "FCF=CFO−购建长期资产现金支出，是简化代理，非已核定FCFF/FCFE；"
+                  "MONETARYFUNDS是货币资金代理，受限资金及现金流归属须回查原文。")
     return ts
 
 

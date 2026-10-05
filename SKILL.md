@@ -112,7 +112,7 @@ python .codebuddy/skills/stock-value-analyzer/scripts/fetch_stock_data.py --symb
 
 - **跨市场标的（AH/ADR）必须分别独立调用，禁止汇率换算。**
 - 取数后必检查 `meta.engines_used` / `errors`；两引擎都失败时报告首页 ⚠️ 标注"数据降级"。
-- **A 股限制**：`stock_financial_abstract` 为摘要级数据，缺三大报表明细，故 A 股 `models` 中 M-Score/Z-Score/反向 DCF 多返回 `applicable=False`，**诚实标注，禁止用经营现金流冒充 FCF**。
+- **A股三表补充**：沪深A股另取东方财富三表，按共同年报期生成模型输入，`FCF=CFO−购建长期资产现金支出`；原始CSV和接口元数据保存至当前工作目录的 `数据/AKShare/`。明细失败保留摘要并记录 `financials_detail.errors`；金融业M/Z及标准反向DCF仍不适用。引用前检查 `missing_fields`、`defaults_used` 和适用状态；FCF为简化代理，须核现金流归属和资本成本，禁止用CFO冒充FCF。
 
 > 详见 → `references/api-data-source-protocol.md`（双引擎分工、字段映射、降级策略）
 
@@ -213,7 +213,7 @@ python .codebuddy/skills/stock-value-analyzer/scripts/fetch_stock_data.py --symb
 
 | 模型 | 用途 | 来源 |
 |---|---|---|
-| **反向 DCF** | 二分法反解"当前价格隐含的永续增速"，再判断该增速是否现实 | `models.reverse_dcf`（HK/US；A 股因缺 FCF 多 not applicable） |
+| **反向 DCF** | 二分法反解预测期隐含增速，再判断该增速是否现实 | `models.reverse_dcf`（有正FCF及市值且适用时计算；终值增长率另设） |
 | **情景概率加权估值** | 乐观/中性/悲观三情景 × 概率 = 期望内在价值 | `references/valuation-models.md` |
 | **EPV 盈利能力价值** | 不依赖增长假设的保守底线估值 | 同上 |
 | **分行业估值路由** | 金融用 PB-ROE/DDM；周期用归一化盈利；成长用反向 DCF/PEG/Rule of 40；稳定用 DCF | 同上 |

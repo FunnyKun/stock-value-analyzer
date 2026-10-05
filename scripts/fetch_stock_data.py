@@ -32,6 +32,7 @@ import sys
 import time
 import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # v2.0 量化模型库（与本脚本同目录）。缺失时降级为不计算，不影响基础取数。
@@ -289,9 +290,10 @@ def fetch_via_akshare_a(symbol: str) -> Dict[str, Any]:
     except Exception as e:
         spot["_error"] = f"stock_zh_a_spot_em 失败: {e}"
 
-    # v2.0：A股摘要级多年序列 + 量化模型（明细不足，M/Z 跳过，反向DCF 因缺 FCF 不计算）
+    # A股补充三表明细；失败时保留摘要与不适用状态。
     _ts_a: Dict[str, Any] = {}
     _models_a: Dict[str, Any] = {}
+    _detail_a: Dict[str, Any] = {"files": [], "errors": []}
     if _vm is not None and _df_fin_a is not None:
         try:
             _ts_a = _vm.extract_time_series_akshare_a(_df_fin_a)
@@ -300,6 +302,48 @@ def fetch_via_akshare_a(symbol: str) -> Dict[str, Any]:
                                            industry=indiv.get("行业"), enable_forensic=False)
         except Exception as e:
             _models_a = {"_error": f"模型计算失败: {e}"}
+
+    if _vm is not None:
+        try:
+            if len(symbol) != 6 or not symbol.isdigit() or symbol[0] not in "036":
+                raise ValueError("当前三表接口仅核验沪深A股6位代码")
+            report_symbol = ("SH" if symbol.startswith("6") else "SZ") + symbol
+            reports = []
+            for name in ("stock_profit_sheet_by_report_em", "stock_balance_sheet_by_report_em",
+                         "stock_cash_flow_sheet_by_report_em"):
+                params = {"symbol": report_symbol}
+                info = ak.interface_info(name) if hasattr(ak, "interface_info") else {
+                    "source": "东方财富", "documentation": "https://akshare.akfamily.xyz/data/stock/stock.html"}
+                df = getattr(ak, name)(**params)
+                if df is None or df.empty or "REPORT_DATE" not in df:
+                    raise ValueError(f"{name} 返回空表或缺报告期")
+                dates = df["REPORT_DATE"].dropna().astype(str)
+                if dates.empty:
+                    raise ValueError(f"{name} 没有有效报告期")
+                now = datetime.now().astimezone()
+                out = Path.cwd() / "数据/AKShare" / symbol / now.strftime("%Y-%m-%d")
+                out.mkdir(parents=True, exist_ok=True)
+                file = out / f"{name}_{now:%H%M%S_%f}.csv"
+                df.to_csv(file, index=False, encoding="utf-8-sig")
+                meta = {"akshare_version": ak.__version__, "interface": name, "parameters": params,
+                        "retrieved_at": now.isoformat(), "rows": len(df), "file": str(file),
+                        "data_start": dates.min(), "data_end": dates.max(), "interface_info": info}
+                file.with_suffix(".json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                _detail_a["files"].append(meta)
+                reports.append(df)
+            ts_detail = _vm.extract_time_series_akshare_a_reports(*reports)
+            industry = " ".join([str(indiv.get("行业", "")), ts_detail["org_type"]])
+            is_financial = _vm._guess_industry_type(industry=industry) == "financial"
+            base_fcf = None if is_financial else _vm._ts_get(ts_detail, "cashflow", "free_cashflow")
+            mc = spot.get("market_cap_total") or _vm._num(indiv.get("总市值"))
+            models_detail = _vm.compute_models(ts_detail, market_cap=mc, base_fcf=base_fcf, industry=industry)
+            if is_financial:
+                models_detail["reverse_dcf"] = {"applicable": False, "reason": "金融业不使用标准FCF反向DCF"}
+            models_detail["reverse_dcf"]["note"] = (models_detail["reverse_dcf"].get("note", "") +
+                "；A股FCF为CFO−CapEx简化代理，使用前核融资口径与资本成本；金融股不使用标准DCF。")
+            _ts_a, _models_a = ts_detail, models_detail
+        except Exception as e:
+            _detail_a["errors"].append(f"A股三表补充失败，保留摘要: {e}")
 
     return {
         "price": {
@@ -329,6 +373,7 @@ def fetch_via_akshare_a(symbol: str) -> Dict[str, Any]:
         },
         "financials_abstract": fin,
         "raw_individual_info": indiv,
+        "financials_detail": _detail_a,
         "time_series": _ts_a,
         "models": _models_a,
     }
@@ -561,6 +606,7 @@ def fetch_all(symbol: str, market: str, fx_market_to_report: float = 1.0) -> Dic
             data = fetch_via_akshare_a(norm["akshare"])
             merged.update(data)
             engines_used.append("akshare")
+            errors.extend(data.get("financials_detail", {}).get("errors", []))
         except Exception as e:
             engines_failed.append({"engine": "akshare(A)", "error": str(e)})
             errors.append(f"akshare A: {e}")
